@@ -57,7 +57,7 @@ Here is the loss logs.
 **Nano GPT-1**
 TODO: write the demo codes
 
-## GPT-2
+## 2019 GPT-2
 
 [2019 GPT-2: Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 
@@ -73,7 +73,7 @@ TODO: write the demo codes
 **Nano GPT-2**
 TODO: write the demo codes
 
-## GPT-3
+## 2020 GPT-3
 [2020 GPT-3: Language Models are Few-Shot Learners](https://arxiv.org/pdf/2005.14165.pdf)
 
 ![](doc/gpt3.png)
@@ -85,6 +85,15 @@ TODO: write the demo codes
     - Transformer
 
 **Nano GPT-3**
+TODO: write the demo codes
+
+## 2022 chatGPT
+
+TODO: write the demo codes
+
+## Chain of Thought
+
+**Nano CoT**
 TODO: write the demo codes
 
 ## References
