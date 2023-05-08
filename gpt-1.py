@@ -48,7 +48,7 @@ class SimpleBookData(object):
         tokens = []
         for word in words:
             idx = self.vocab_index[word] if word in self.vocab_index else self.vocab_index[SimpleBookData.UNK]
-            if idx > top_k_vocab:
+            if idx >= top_k_vocab:
                 idx = self.vocab_index[SimpleBookData.UNK]
             tokens.append(idx)
         return tokens
