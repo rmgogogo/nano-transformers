@@ -27,19 +27,19 @@ class TranslationData(object):
         samples = text.split('\n')
         return samples
 
-    def sparse_coding(self, sentence, dictionary, max_len=20, sos=False, eos=False):
-        words = sentence.split()[:max_len]
-        while len(words) < max_len:
-            words.append('<PAD>')
+    def one_hot(self, sample, dictionary, max_len=20, sos=False, eos=False):
+        sample = sample.split()[:max_len]
+        while len(sample) < max_len:
+            sample.append('<PAD>')
         if sos:
             tokens = ['<START>']
         else:
             tokens = []
-        tokens.extend(words)
+        tokens.extend(sample)
         if eos:
+            # TODO: <END>?
             tokens.append('<PAD>')
         
-        tokens = tokens[:20]
         idxs = []
         for token in tokens:
             try:
@@ -47,19 +47,19 @@ class TranslationData(object):
             except:
                 idxs.append(dictionary.index('<UNK>'))
         idxs = np.array(idxs)
-        return idxs
+        return np.eye(len(dictionary))[idxs]
 
-    def prettify(self, logits, dictionary):
-        idxs = np.argmax(logits, axis=1)
+    def prettify(self, sample, dictionary):
+        idxs = np.argmax(sample, axis=1)
         return " ".join(np.array(dictionary)[idxs])
     
     def generate(self, max_len=20):
         idx = -1
         while True:
             idx = (idx + 1) % self.n_samples
-            de = self.sparse_coding(self.de_samples[idx], self.de_dict, max_len=max_len, sos=False, eos=False)
-            en_in = self.sparse_coding(self.en_samples[idx], self.en_dict, max_len=max_len, sos=True, eos=False)
-            en_out = self.sparse_coding(self.en_samples[idx], self.en_dict, max_len=max_len, sos=False, eos=True)
+            de = self.one_hot(self.de_samples[idx], self.de_dict, max_len=max_len, sos=False, eos=False)
+            en_in = self.one_hot(self.en_samples[idx], self.en_dict, max_len=max_len, sos=True, eos=False)
+            en_out = self.one_hot(self.en_samples[idx], self.en_dict, max_len=max_len, sos=False, eos=True)
             yield (de, en_in), en_out
     
     def get_generator(self, max_len):
@@ -163,10 +163,9 @@ def get_model(max_len=20, hidden=64, head=4, en_vocab_size=1004, de_vocab_size=1
     """
     Get the model
     """
-    # Encode (max_len)
-    # Input based on sparse index and then an embedding layer, it's much faster than one-hot.
-    encodeInput = tf.keras.Input(shape=(max_len), name='encode_input')
-    encodeEmb = tf.keras.layers.Embedding(input_dim=de_vocab_size, output_dim=hidden, name='encode_input_embedding')(encodeInput)
+    # Encode (max_len, vocab_size)
+    encodeInput = tf.keras.Input(shape=(max_len, de_vocab_size), name='encode_input')
+    encodeEmb = tf.keras.layers.Dense(units=hidden, activation=None, name='encode_input_embedding')(encodeInput)
     encodeEmb = RmPosition(max_len, hidden, name='encode_input_positioning')(encodeEmb)
 
     #===== Transformer Encode Block Starts =====
@@ -182,10 +181,10 @@ def get_model(max_len=20, hidden=64, head=4, en_vocab_size=1004, de_vocab_size=1
     encodeEmb = tf.keras.layers.LayerNormalization(axis=-1, name='encode_ff_norm')(encodeEmb)
     #===== Transformer Encode Block Ends =====
     
-    # Decode (max_len, vocab_size), input has one more '<START>', use Mask;
-    decodeInput = tf.keras.Input(shape=(max_len), name='decode_input')
-    decodeEmb = tf.keras.layers.Embedding(input_dim=en_vocab_size, output_dim=hidden, name='decode_input_embedding')(decodeInput)
-    decodeEmb = RmPosition(max_len, hidden, name='decode_input_positioning')(decodeEmb)
+    # Decode (max_len+1, vocab_size), input has one more '<START>', use Mask;
+    decodeInput = tf.keras.Input(shape=(max_len+1, en_vocab_size), name='decode_input')
+    decodeEmb = tf.keras.layers.Dense(units=hidden, activation=None, name='decode_input_embedding')(decodeInput)
+    decodeEmb = RmPosition(max_len+1, hidden, name='decode_input_positioning')(decodeEmb)
     
     #===== Transformer Decode Block Starts =====
     # Decode Attention Add Norm
@@ -205,8 +204,8 @@ def get_model(max_len=20, hidden=64, head=4, en_vocab_size=1004, de_vocab_size=1
     decodeEmb = tf.keras.layers.LayerNormalization(axis=-1, name='decode_ff_norm')(decodeEmb)
     #===== Transformer Decode Block Ends =====
 
-    # Output (logits, not softmax, loss-fn side will take care it.)
-    output = tf.keras.layers.Dense(en_vocab_size, activation=None, name='output')(decodeEmb)
+    # Output
+    output = tf.keras.layers.Dense(en_vocab_size, activation='softmax', name='output')(decodeEmb)
 
     model = tf.keras.Model(inputs=[encodeInput, decodeInput], outputs=output, name='model')
     return model
@@ -224,30 +223,51 @@ def plot_model(model):
 
 ##################################################################################################################################
 
+class BatchLoggingModel(tf.keras.Model):
+    def __init__(self, model, tb_dir):
+        super().__init__()
+        self.model = model
+        self.train_writer = tf.summary.create_file_writer(tb_dir)
+
+    def train_step(self, data):
+        x, y = data
+        with tf.GradientTape() as tape:
+            y_pred = self.model(x, training=True)
+            loss = self.compiled_loss(y, y_pred)
+        self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
+        with self.train_writer.as_default(step=self._train_counter):
+            tf.summary.scalar('batch_loss', loss)
+        return self.compute_metrics(x, y, y_pred, None)
+    
+    def call(self, x):
+        x = self.model(x)
+        return x
+
+##################################################################################################################################
+
 import os
 import datetime
 
-def train(max_len=20, hidden=64, head=4, batchsize=64, epochs=1, steps_per_epoch=None, tensorboard=False, tb_dir='logs', model_dir='saved_model/transformer'):
+def train(max_len=20, hidden=64, head=4, batchsize=64, epochs=1, steps_per_epoch=None, tensorboard=False, tb_dir='logs', model_dir='saved_model/transformer_onehot'):
     """
     Train the model
     """
     translation_data = TranslationData()
     dataset = tf.data.Dataset.from_generator(
         translation_data.get_generator(max_len),
-        output_signature=(((tf.TensorSpec(shape=(max_len), dtype=tf.int64), tf.TensorSpec(shape=(max_len), dtype=tf.int64)),
-                           tf.TensorSpec(shape=(max_len), dtype=tf.int64))))
+        output_signature=(((tf.TensorSpec(shape=(20, 14966), dtype=tf.int64), tf.TensorSpec(shape=(21, 1004), dtype=tf.int64)),
+                           tf.TensorSpec(shape=(21, 1004), dtype=tf.int64))))
     dataset = dataset.prefetch(buffer_size=batchsize*1000).shuffle(buffer_size=batchsize*100).batch(batchsize)
     
     model = get_model(max_len=max_len, hidden=hidden, head=head,
                       en_vocab_size=translation_data.en_vocab_size, de_vocab_size=translation_data.de_vocab_size)
     if tensorboard:
         tb_dir = os.path.join(tb_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-
-    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+        model = BatchLoggingModel(model, tb_dir)
     model.compile(
-        loss=loss_fn,
-        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-3),
-        metrics=["sparse_categorical_accuracy"],
+        loss="categorical_crossentropy",
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        # metrics=["categorical_accuracy"],
     )
 
     print(f'Trainable params: {len(model.trainable_weights)}')
@@ -259,16 +279,16 @@ def train(max_len=20, hidden=64, head=4, batchsize=64, epochs=1, steps_per_epoch
         callbacks.append(tensorboard_callback)
     steps_per_epoch = steps_per_epoch if steps_per_epoch is not None else translation_data.n_samples // batchsize
     _ = model.fit(dataset, steps_per_epoch=steps_per_epoch, epochs=epochs, callbacks=callbacks) 
-    model.save(model_dir)
+    model.model.save(model_dir)
 
-def predict(input_string, max_len=20, model_dir='saved_model/transformer'):
+def predict(input_string, max_len=20, model_dir='saved_model/transformer_onehot'):
     model=tf.keras.models.load_model(model_dir)
     translation_data = TranslationData()
 
-    input_de = np.array([translation_data.sparse_coding(input_string, translation_data.de_dict, max_len=max_len)])
+    input_de = np.array([translation_data.one_hot(input_string, translation_data.de_dict, max_len=max_len)])
     output = ""
     for i in range(max_len):
-        last_output = np.array([translation_data.sparse_coding(output, translation_data.en_dict, max_len=max_len, sos=True)])
+        last_output = np.array([translation_data.one_hot(output, translation_data.en_dict, max_len=max_len, sos=True)])
         predicted = model.predict((input_de, last_output), verbose = 2)
         predicted_str = translation_data.prettify(predicted[0], translation_data.en_dict)
         predicted_token = predicted_str.split()[i]
@@ -289,7 +309,7 @@ flags.DEFINE_bool("smoke", False, "Try train a little bit to do smoking test")
 flags.DEFINE_bool("train", False, "Train the model and save")
 flags.DEFINE_bool("predict", False, "Load saved model and predict")
 flags.DEFINE_string("input", "es ist gut", "Used with --predict, German input, to be translated to English")
-flags.DEFINE_string("tb_dir", "/tmp/logs", "TensorbBoard log folder")
+flags.DEFINE_string("tb_dir", "logs", "TensorbBoard log folder")
 
 def main(unused_args):
     """
@@ -305,9 +325,11 @@ def main(unused_args):
     if FLAGS.smoke:
         train(steps_per_epoch=10, epochs=2, tensorboard=True, tb_dir=FLAGS.tb_dir)
     if FLAGS.train:
-        train(steps_per_epoch=None, epochs=4, tensorboard=True, tb_dir=FLAGS.tb_dir)
+        train(steps_per_epoch=None, epochs=2, tensorboard=True, tb_dir=FLAGS.tb_dir)
     if FLAGS.predict:
         predict(FLAGS.input)
+        
+    print('Bye...')
 
 if __name__ == '__main__':
     app.run(main)
