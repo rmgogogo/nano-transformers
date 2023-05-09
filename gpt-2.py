@@ -5,7 +5,7 @@ Compared with gpt-1.py,
 - use Dropout
 - use GELU
 - use GPT-2 block
-- use GPT-2 res initializaer
+- use GPT-2 res initializaer 
 """
 
 import tensorflow as tf
