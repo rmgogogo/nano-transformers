@@ -12,10 +12,13 @@
     - Transfomer
     - Self Regression pretraining
     - Fine-turing with multiple tasks
+    - Byte Pair Encoding
+    - GELU
 
 ## Codes
 
-A simple GPT-1 with 2 layers decoder block. The default cnfig contains 3M parameters. 
+A simple GPT-1 with 2 layers decoder block.
+In this gpt-1.py, no BPE, no GELU, just for simplicity.
 
 ```bash
 python gpt-1.py --plot

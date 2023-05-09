@@ -7,6 +7,7 @@
 ![](image/gpt3.png)
 
 - Major innovations
+    - Alternating dense and locally banded sparse attention patterns in the layers of the transformer, similar to the Sparse Transformer
     - Few-shot prompting
     - Bigger
 - Existing innovations used
