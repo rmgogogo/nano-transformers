@@ -3,7 +3,7 @@
 ## Paper
 
 [2019 GPT-2: Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
- 
+
 ![](image/gpt2.png)
 
 - Major innovations

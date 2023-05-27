@@ -1,11 +1,12 @@
 """
-Compared with gpt-1.py, 
-- no changes on dataset.
-- no changes on tokenizer, although GPT-2 uses Byte-level BPE but that's not this project's focus.
-- use Dropout
-- use GELU
-- use GPT-2 block
-- use GPT-2 res initializaer
+The major change in GPT-3 is the bigger model. This code covers the bigger context window.
+There are several ways to support bigger context window.
+- memory caching, e.x. Transformer XL
+- sparse attention, e.x. OpenAI Sparse Attention, Google BigBird
+- linear attention, e.x. Google Performer, Randome Feature Attention, Apple Attention Free Transformer
+
+OpenAI's GPT-3 uses sparse attention. However it's not easy to be implemented and speed is not fast.
+We use Apple Attention Free Transformer ASF-simple version here.
 """
 
 import tensorflow as tf
@@ -133,29 +134,30 @@ class RmPosition(tf.keras.layers.Layer):
 
 ##################################################################################################################################
 
-class RmMultiHeadAttention(tf.keras.layers.Layer):
+class AsfAttention(tf.keras.layers.Layer):
     """
-    Multi-head attention.
+    Attention Free Transformer (ASF). It's still a type of attention.
     """
 
-    def __init__(self, head, hidden, residual_init_factor, sequence_mask=False, **kwargs):
+    def __init__(self, residual_init_factor, **kwargs):
         """
         residual_init_factor is used to set the stddev of the initial weights, the weights is used to project the residual.
-        As for why we do this, guess it's used to avoid too big residual in early phase.
         """
-        super(RmMultiHeadAttention, self).__init__(**kwargs)
-        self.head = head
-        self.hidden = hidden
-        self.sequence_mask = sequence_mask
-        self.chunk_size = int(hidden / head)
+        super(AsfAttention, self).__init__(**kwargs)
+        self.residual_init_factor = residual_init_factor
 
-        # Weights for inputs. 
-        #   stddev is bigger  => weights are more random  => then initial diff are more small  => then init attention-weights are more close
-        #   It's possible we can have two different hidden, one is input, another is output.
+    def build(self, input_shape):
+        print(input_shape)
+        hidden = input_shape[0][2]
         self.w_q = self.add_weight(shape=(hidden, hidden), initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1e-2), trainable=True, name='w_q')
         self.w_k = self.add_weight(shape=(hidden, hidden), initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1e-2), trainable=True, name='w_k')
         self.w_v = self.add_weight(shape=(hidden, hidden), initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1e-2), trainable=True, name='w_v')
-        self.w_m = self.add_weight(shape=(hidden, hidden), initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1e-2*residual_init_factor), trainable=True, name='w_m')
+        self.w_p = self.add_weight(shape=(hidden, hidden), initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1e-2*self.residual_init_factor), trainable=True, name='w_p')
+        
+        # Factorized ASF-full
+        # max_len = input_shape[1]
+        # self.w_w1 = self.add_weight(shape=(max_len, max_len // 10), initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1e-2), trainable=True, name='w_w1')
+        # self.w_w2 = self.add_weight(shape=(max_len // 10, max_len), initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1e-2), trainable=True, name='w_w2')
     
     def get_config(self):
         """
@@ -163,9 +165,7 @@ class RmMultiHeadAttention(tf.keras.layers.Layer):
         """
         config = super().get_config()
         config.update({
-            "head": self.head,
-            "hidden": self.hidden,
-            "sequence_mask": self.sequence_mask,
+            "residual_init_factor": self.residual_init_factor,
         })
         return config
     
@@ -178,39 +178,26 @@ class RmMultiHeadAttention(tf.keras.layers.Layer):
         emb_k = tf.matmul(k, self.w_k)
         emb_v = tf.matmul(v, self.w_v)
         
-        multi_q = tf.stack(tf.split(emb_q, num_or_size_splits=self.head, axis=-1), axis=0)
-        multi_k = tf.stack(tf.split(emb_k, num_or_size_splits=self.head, axis=-1), axis=0)
-        multi_v = tf.stack(tf.split(emb_v, num_or_size_splits=self.head, axis=-1), axis=0)
+        # ASF-full
+        # w = tf.matmul(self.w_w1, self.w_w2)
+        # w = tf.expand_dims(w, axis=0)
+        # w_exp = tf.math.exp(w)
         
-        # Scale based on one head's shape, not all heads
-        scale = tf.cast(multi_q.shape[-1] ** 0.5, tf.float32)
-        dot_match = tf.matmul(multi_q, multi_k, transpose_b=True) / scale
-        attention_weights = tf.nn.softmax(dot_match)
+        k_exp = tf.math.exp(emb_k)
+        k_exp_v = tf.math.multiply(k_exp, emb_v)
+        k_exp_prefix = tf.math.cumsum(k_exp, axis=1)
+        k_exp_v_prefix = tf.math.cumsum(k_exp_v, axis=1)
 
-        # Sequence Mask (don't let model know future sequence)
-        # Or set -INF, move ahead of softmax
-        if self.sequence_mask:
-            attention_weights = tf.linalg.band_part(attention_weights, -1, 0)
-            attention_weights = tf.math.divide(attention_weights, tf.reduce_sum(attention_weights, axis=3, keepdims=True))
-        # Dropout
-        # attention_weights = tf.keras.layers.Dropout(rate=dropout_rate)(attention_weights)
-        
-        # Convert from multiple style back to single style
-        weighted_v = tf.matmul(attention_weights, multi_v)
-        weighted_v = tf.split(weighted_v, num_or_size_splits=self.head, axis=0)
-        weighted_v = tf.concat(weighted_v, axis=-1)
-        weighted_v = tf.squeeze(weighted_v, axis=0)
-
-        # Mix the concated multi-head channels.
-        weighted_v = tf.matmul(weighted_v, self.w_m)
-        # Dropout
-        # weighted_v = tf.keras.layers.Dropout(rate=dropout_rate)(weighted_v)
-
-        return weighted_v
+        y = tf.math.multiply(
+            tf.sigmoid(emb_q),
+            # ASF-full tf.matmul(w_exp, k_exp_v_prefix) / tf.matmul(w_exp, k_exp_prefix))
+            k_exp_v_prefix / k_exp_prefix)
+        out = tf.matmul(y, self.w_p)
+        return out
 
 ##################################################################################################################################
 
-def get_model(max_len, hidden, head, vocab_size, dropout_rate):
+def get_model(max_len, hidden, vocab_size, dropout_rate):
     """
     Get the model
     """
@@ -228,10 +215,10 @@ def get_model(max_len, hidden, head, vocab_size, dropout_rate):
     residual_init_factor = 1/math.sqrt(2 * n_blocks)
 
     for i in range(n_blocks):
-        #===== GPT-2 Block Starts =====
+        #===== Block Starts =====
         # Norm, Attention and Add
         res =  tf.keras.layers.LayerNormalization(axis=-1, name=f'decode_attention_norm-{i}')(data)
-        res = RmMultiHeadAttention(head=head, hidden=hidden, residual_init_factor=residual_init_factor, sequence_mask=True, name=f'decode_attention-{i}')(inputs=(res, res, res))
+        res = AsfAttention(residual_init_factor=residual_init_factor, name=f'decode_attention-{i}')(inputs=(res, res, res))
         data = tf.keras.layers.Add(name=f'decode_attention_add-{i}')([data, res])
         
         # Norm, FeedForward, Dropout and Add
@@ -242,7 +229,7 @@ def get_model(max_len, hidden, head, vocab_size, dropout_rate):
                                     name=f'decode_ff_decrease-{i}')(res)
         res = tf.keras.layers.Dropout(rate=dropout_rate)(res)
         data = tf.keras.layers.Add(name=f'decode_ff_add-{i}')([data, res])
-        #===== GPT-2 Block Ends =====
+        #===== Block Ends =====
 
     # Final norm
     data = tf.keras.layers.LayerNormalization(axis=-1, name='final_norm')(data)
@@ -272,7 +259,7 @@ import datetime
 def smoke_data(max_len, top_k_vocab, min_tokens_per_sample):
     SimpleBookData.smoke(max_len=max_len, top_k_vocab=top_k_vocab, min_tokens_per_sample=min_tokens_per_sample)
 
-def train(max_len, top_k_vocab, min_tokens_per_sample, hidden, head=4, dropout_rate=0, batch_size=64, epochs=1, steps_per_epoch=None, tensorboard=False, tb_dir='logs', model_dir='saved_model/gpt_2_pretrain'):
+def train(max_len, top_k_vocab, min_tokens_per_sample, hidden, dropout_rate=0, batch_size=64, epochs=1, steps_per_epoch=None, tensorboard=False, tb_dir='logs', model_dir='saved_model/gpt_2_pretrain'):
     """
     Train the model
     """
@@ -282,7 +269,7 @@ def train(max_len, top_k_vocab, min_tokens_per_sample, hidden, head=4, dropout_r
         output_signature=((tf.TensorSpec(shape=(max_len), dtype=tf.int64), tf.TensorSpec(shape=(max_len), dtype=tf.int64))))
     dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     
-    model = get_model(max_len=max_len, hidden=hidden, head=head, vocab_size=top_k_vocab, dropout_rate=dropout_rate)
+    model = get_model(max_len=max_len, hidden=hidden, vocab_size=top_k_vocab, dropout_rate=dropout_rate)
     if tensorboard:
         tb_dir = os.path.join(tb_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
@@ -340,20 +327,21 @@ flags.DEFINE_bool("train", False, "Train the model and save")
 flags.DEFINE_bool("predict", False, "Load saved model and predict")
 flags.DEFINE_string("input", "I want to", "Used with --predict, English input, it's prompt, predict next tokens")
 flags.DEFINE_string("tb_dir", "/tmp/logs", "TensorbBoard log folder")
-flags.DEFINE_integer("max_len", 30, "Max senquence length, the max number of tokens")
+flags.DEFINE_integer("max_len", 90, "Max senquence length, the max number of tokens")
 flags.DEFINE_integer("epochs", 1, "Epochs to train")
 flags.DEFINE_integer("vocab", 10000, "Vocab size, choose top-k vocab words")
 flags.DEFINE_integer("hidden", 512, "hidden vector size")
 flags.DEFINE_integer("min_tokens_per_sample", 8, "ignore sequence which is shorter than it")
+flags.DEFINE_integer("smoke_steps", 2000, "how many steps to do smoking training")
 
 def main(unused_args):
     """
     Samples:
-      python gpt-2.py --sample
-      python gpt-2.py --plot
-      python gpt-2.py --smoke --predict
-      python gpt-2.py --train --predict
-      python gpt-2.py --predict --input "I don't want to"
+      python gpt-3.py --sample
+      python gpt-3.py --plot
+      python gpt-3.py --smoke --predict
+      python gpt-3.py --train --predict
+      python gpt-3.py --predict --input "I don't want to"
     """
 
     import random
@@ -361,13 +349,13 @@ def main(unused_args):
     random.seed(time.time())
 
     if FLAGS.plot:
-        model = get_model(max_len=FLAGS.max_len, vocab_size=FLAGS.vocab, hidden=FLAGS.hidden, head=4)
+        model = get_model(max_len=FLAGS.max_len, vocab_size=FLAGS.vocab, hidden=FLAGS.hidden, dropout_rate=0.1)
         print(model.summary())
         plot_model(model)
     if FLAGS.sample:
         smoke_data(max_len=FLAGS.max_len, top_k_vocab=FLAGS.vocab, min_tokens_per_sample=FLAGS.min_tokens_per_sample)
     if FLAGS.smoke:
-        train(max_len=FLAGS.max_len, top_k_vocab=FLAGS.vocab, min_tokens_per_sample=FLAGS.min_tokens_per_sample, hidden=FLAGS.hidden, dropout_rate=0.1, steps_per_epoch=1000, epochs=FLAGS.epochs, tensorboard=False, tb_dir=FLAGS.tb_dir)
+        train(max_len=FLAGS.max_len, top_k_vocab=FLAGS.vocab, min_tokens_per_sample=FLAGS.min_tokens_per_sample, hidden=FLAGS.hidden, dropout_rate=0.1, steps_per_epoch=FLAGS.smoke_steps, epochs=FLAGS.epochs, tensorboard=False, tb_dir=FLAGS.tb_dir)
     if FLAGS.train:
         train(max_len=FLAGS.max_len, top_k_vocab=FLAGS.vocab, min_tokens_per_sample=FLAGS.min_tokens_per_sample, hidden=FLAGS.hidden, dropout_rate=0.1, steps_per_epoch=None, epochs=FLAGS.epochs, tensorboard=True, tb_dir=FLAGS.tb_dir)
     if FLAGS.predict:

@@ -3,7 +3,7 @@
 ## Paper
 
 [2018 GPT-1: Improving Language Understanding by Generative Pre-Training](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf)
- 
+
 ![](image/gpt1.png)
 
 - Major innovations
