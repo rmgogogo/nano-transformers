@@ -24,15 +24,8 @@ This project targets at
 
 ## 2021 InstructGPT
 
-TODO: write the demo codes
-
-## 2022 chatGPT
-
-TODO: write the demo codes
-
-## Chain of Thought
-
-TODO: write the demo codes
+[InstructGPT](instruct-gpt/), not fully done yet. 
+- Tried to get `emergent` ability in small model small data. Failed. It can't `reasoning`, but `memory` well.
 
 ## References
 
