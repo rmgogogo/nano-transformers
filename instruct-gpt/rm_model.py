@@ -19,7 +19,7 @@ def get_model(max_len, hidden, head, vocab_size, dropout_rate, n_blocks):
     - Input: (Batch, Seq)
     """
     # Encode (max_len)
-    input = tf.keras.Input(shape=(max_len), name='input')
+    input = tf.keras.Input(shape=(max_len,), name='input')
     data = tf.keras.layers.Embedding(input_dim=vocab_size, output_dim=hidden, name='input_embedding')(input)
     data = RmPosition(name='input_positioning')(data)
 

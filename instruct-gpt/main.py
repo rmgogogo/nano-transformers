@@ -25,7 +25,7 @@ flags.DEFINE_integer("smoke_steps", 2000, "how many steps to do smoking training
 flags.DEFINE_integer("add_normal_repeat", 100, "repeat the normal-add samples")
 flags.DEFINE_float("dropout", 0.1, "drop out rate, 0-1")
 
-def train(n_blocks, max_len, hidden, head, dropout_rate, add_normal_repeat, batch_size=64, epochs=1, steps_per_epoch=None, tensorboard=False, tb_dir='/tmp/instruct-gpt/tb', model_dir='/tmp/instruct-gpt/model'):
+def train(n_blocks, max_len, hidden, head, dropout_rate, add_normal_repeat, batch_size=64, epochs=1, steps_per_epoch=None, tensorboard=False, tb_dir='/tmp/instruct-gpt/tb', model_dir='model.keras'):
     """
     Train the model
     """
@@ -56,11 +56,11 @@ def train(n_blocks, max_len, hidden, head, dropout_rate, add_normal_repeat, batc
     model.save(model_dir)
 
 
-def predict(input_string, model_dir='/tmp/instruct-gpt/model'):
+def predict(input_string, model_dir='model.keras'):
     tokenizer = MathData().get_tokenizer()
 
     model=tf.keras.models.load_model(model_dir)
-    max_len = model.get_layer('input').input_shape[0][1]
+    max_len = model.get_layer('input').output.shape[1]
 
     output_str = ''
     current_tokens = tokenizer.encode_sentence(input_string)
